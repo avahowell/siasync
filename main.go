@@ -13,56 +13,15 @@ import (
 	"github.com/NebulousLabs/Sia/api"
 )
 
+// SiaFolder is a folder that is synchronized to a Sia node.
 type SiaFolder struct {
 	client  *api.Client
 	watcher *fsnotify.Watcher
 }
 
-func (sf *SiaFolder) handleCreate(file string) {
-	log.Println("sync updated detected, uploading", file)
-	abspath, err := filepath.Abs(file)
-	if err != nil {
-		log.Println("error getting absolute path to upload:", err)
-		return
-	}
-	err = sf.client.Post(fmt.Sprintf("/renter/upload/%v", file), fmt.Sprintf("source=%v", abspath), nil)
-	if err != nil {
-		log.Printf("error uploading %v: %v\n", file, err)
-	}
-}
-
-func (sf *SiaFolder) handleRemove(file string) {
-	log.Println("sync updated detected, removing", file)
-	err := sf.client.Post(fmt.Sprintf("/renter/delete/%v", file), "", nil)
-	if err != nil {
-		log.Printf("error removing %v: %v\n", file, err)
-	}
-}
-
-func (sf *SiaFolder) uploadNonExisting(files []string) error {
-	var renterFiles api.RenterFiles
-	err := sf.client.Get("/renter/files", &renterFiles)
-	if err != nil {
-		return err
-	}
-
-	for _, diskfile := range files {
-		exists := false
-		for _, siafile := range renterFiles.Files {
-			if siafile.SiaPath == diskfile {
-				exists = true
-			}
-		}
-
-		if !exists {
-			sf.handleCreate(diskfile)
-		}
-	}
-
-	return nil
-}
-
-func OpenSiafolder(path string, apiaddr string) (*SiaFolder, error) {
+// NewSiafolder creates a new SiaFolder using the provided path and api
+// address.
+func NewSiafolder(path string, apiaddr string) (*SiaFolder, error) {
 	sf := &SiaFolder{}
 
 	sf.client = api.NewClient(apiaddr, "")
@@ -116,7 +75,7 @@ func OpenSiafolder(path string, apiaddr string) (*SiaFolder, error) {
 					sf.handleRemove(event.Name)
 				}
 			case err := <-watcher.Errors:
-				log.Println("error:", err)
+				log.Println("fsevents error:", err)
 			}
 		}
 	}()
@@ -130,8 +89,58 @@ func OpenSiafolder(path string, apiaddr string) (*SiaFolder, error) {
 	return sf, nil
 }
 
+// Close releases any resources allocated by a SiaFolder.
 func (sf *SiaFolder) Close() error {
 	return sf.watcher.Close()
+}
+
+// handleCreate handles a file creation event. `file` is a relative path to the
+// file on disk.
+func (sf *SiaFolder) handleCreate(file string) {
+	log.Println("sync updated detected, uploading", file)
+	abspath, err := filepath.Abs(file)
+	if err != nil {
+		log.Println("error getting absolute path to upload:", err)
+		return
+	}
+	err = sf.client.Post(fmt.Sprintf("/renter/upload/%v", file), fmt.Sprintf("source=%v", abspath), nil)
+	if err != nil {
+		log.Printf("error uploading %v: %v\n", file, err)
+	}
+}
+
+// handleRemove handles a file removal event.
+func (sf *SiaFolder) handleRemove(file string) {
+	log.Println("sync updated detected, removing", file)
+	err := sf.client.Post(fmt.Sprintf("/renter/delete/%v", file), "", nil)
+	if err != nil {
+		log.Printf("error removing %v: %v\n", file, err)
+	}
+}
+
+// uploadNonExisting runs once and performs any uploads required to ensure
+// every file in files is uploaded to the Sia node.
+func (sf *SiaFolder) uploadNonExisting(files []string) error {
+	var renterFiles api.RenterFiles
+	err := sf.client.Get("/renter/files", &renterFiles)
+	if err != nil {
+		return err
+	}
+
+	for _, diskfile := range files {
+		exists := false
+		for _, siafile := range renterFiles.Files {
+			if siafile.SiaPath == diskfile {
+				exists = true
+			}
+		}
+
+		if !exists {
+			sf.handleCreate(diskfile)
+		}
+	}
+
+	return nil
 }
 
 func main() {
@@ -139,7 +148,7 @@ func main() {
 		fmt.Println("usage: siasync [folder]")
 		os.Exit(1)
 	}
-	sf, err := OpenSiafolder(os.Args[1], "localhost:9980")
+	sf, err := NewSiafolder(os.Args[1], "localhost:9980")
 	if err != nil {
 		log.Fatal(err)
 	}
