@@ -136,7 +136,6 @@ func (sf *SiaFolder) eventWatcher() {
 
 			// WRITE event, checksum the file and re-upload it if it has changed
 			if event.Op&fsnotify.Write == fsnotify.Write {
-				log.Printf("change in %v detected\n", filename)
 				err = sf.handleFileWrite(filename)
 				if err != nil {
 					log.Println(err)
@@ -154,7 +153,7 @@ func (sf *SiaFolder) eventWatcher() {
 
 			// CREATE event
 			if event.Op&fsnotify.Create == fsnotify.Create {
-				log.Println("file creation detected, creating", filename)
+				log.Println("file creation detected, uploading", filename)
 				err = sf.handleCreate(filename)
 				if err != nil {
 					log.Println(err)
@@ -173,18 +172,18 @@ func (sf *SiaFolder) handleFileWrite(file string) error {
 	if err != nil {
 		return err
 	}
-	defer func() {
-		sf.files[file] = checksum
-	}()
 
 	oldChecksum, exists := sf.files[file]
 	if !exists {
+		sf.files[file] = checksum
 		err = sf.handleCreate(file)
 		if err != nil {
 			return err
 		}
 	}
 	if exists && oldChecksum != checksum {
+		log.Printf("change in %v detected, reuploading..\n", file)
+		sf.files[file] = checksum
 		err = sf.handleRemove(file)
 		if err != nil {
 			return err
@@ -219,6 +218,11 @@ func (sf *SiaFolder) handleCreate(file string) error {
 	if err != nil {
 		return fmt.Errorf("error uploading %v: %v\n", file, err)
 	}
+	checksum, err := checksumFile(file)
+	if err != nil {
+		return err
+	}
+	sf.files[file] = checksum
 	return nil
 }
 
@@ -232,6 +236,7 @@ func (sf *SiaFolder) handleRemove(file string) error {
 	if err != nil {
 		return fmt.Errorf("error removing %v: %v\n", file, err)
 	}
+	delete(sf.files, file)
 	return nil
 }
 
