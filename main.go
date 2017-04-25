@@ -15,6 +15,7 @@ import (
 
 // SiaFolder is a folder that is synchronized to a Sia node.
 type SiaFolder struct {
+	path    string
 	client  *api.Client
 	watcher *fsnotify.Watcher
 }
@@ -23,6 +24,7 @@ type SiaFolder struct {
 // address.
 func NewSiafolder(path string, apiaddr string) (*SiaFolder, error) {
 	sf := &SiaFolder{}
+	sf.path = path
 
 	sf.client = api.NewClient(apiaddr, "")
 	var contracts api.RenterContracts
@@ -36,12 +38,15 @@ func NewSiafolder(path string, apiaddr string) (*SiaFolder, error) {
 
 	// walk the provided path
 	var files []string
-	err = filepath.Walk(path, func(path string, f os.FileInfo, err error) error {
+	err = filepath.Walk(path, func(filepath string, f os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
+		if filepath == path {
+			return nil
+		}
 
-		files = append(files, path)
+		files = append(files, filepath)
 		return nil
 	})
 	if err != nil {
@@ -54,11 +59,11 @@ func NewSiafolder(path string, apiaddr string) (*SiaFolder, error) {
 		return nil, err
 	}
 
+	// watch for file changes
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
 	}
-
 	go func() {
 		for {
 			select {
@@ -71,15 +76,11 @@ func NewSiafolder(path string, apiaddr string) (*SiaFolder, error) {
 					sf.handleCreate(event.Name)
 				}
 
-				if event.Op&fsnotify.Rename == fsnotify.Rename {
-					sf.handleRemove(event.Name)
-				}
 			case err := <-watcher.Errors:
 				log.Println("fsevents error:", err)
 			}
 		}
 	}()
-
 	err = watcher.Add(path)
 	if err != nil {
 		return nil, err
@@ -103,7 +104,12 @@ func (sf *SiaFolder) handleCreate(file string) {
 		log.Println("error getting absolute path to upload:", err)
 		return
 	}
-	err = sf.client.Post(fmt.Sprintf("/renter/upload/%v", file), fmt.Sprintf("source=%v", abspath), nil)
+	relpath, err := filepath.Rel(sf.path, file)
+	if err != nil {
+		log.Println("error getting relative path to upload:", err)
+		return
+	}
+	err = sf.client.Post(fmt.Sprintf("/renter/upload/%v", relpath), fmt.Sprintf("source=%v", abspath), nil)
 	if err != nil {
 		log.Printf("error uploading %v: %v\n", file, err)
 	}
@@ -112,7 +118,12 @@ func (sf *SiaFolder) handleCreate(file string) {
 // handleRemove handles a file removal event.
 func (sf *SiaFolder) handleRemove(file string) {
 	log.Println("sync updated detected, removing", file)
-	err := sf.client.Post(fmt.Sprintf("/renter/delete/%v", file), "", nil)
+	relpath, err := filepath.Rel(sf.path, file)
+	if err != nil {
+		log.Println("error getting relative path to remove:", err)
+		return
+	}
+	err = sf.client.Post(fmt.Sprintf("/renter/delete/%v", relpath), "", nil)
 	if err != nil {
 		log.Printf("error removing %v: %v\n", file, err)
 	}
