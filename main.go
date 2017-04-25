@@ -22,6 +22,8 @@ type SiaFolder struct {
 	watcher *fsnotify.Watcher
 
 	files map[string]string // files is a map of file paths to SHA256 checksums, used to reconcile file changes
+
+	closeChan chan struct{}
 }
 
 // NewSiafolder creates a new SiaFolder using the provided path and api
@@ -30,6 +32,7 @@ func NewSiafolder(path string, apiaddr string) (*SiaFolder, error) {
 	sf := &SiaFolder{}
 	sf.path = path
 	sf.files = make(map[string]string)
+	sf.closeChan = make(chan struct{})
 
 	sf.client = api.NewClient(apiaddr, "")
 	var contracts api.RenterContracts
@@ -121,43 +124,41 @@ func checksumFile(path string) (string, error) {
 func (sf *SiaFolder) eventWatcher() {
 	for {
 		select {
+		case <-sf.closeChan:
+			return
 		case event := <-sf.watcher.Events:
-			f, err := os.Stat(event.Name)
-			if err != nil {
-				log.Println("error opening updated file:", err)
-				continue
-			}
-			if f.IsDir() {
-				sf.watcher.Add(event.Name)
+			filename := filepath.Clean(event.Name)
+			f, err := os.Stat(filename)
+			if err == nil && f.IsDir() {
+				sf.watcher.Add(filename)
 				continue
 			}
 
 			// WRITE event, checksum the file and re-upload it if it has changed
 			if event.Op&fsnotify.Write == fsnotify.Write {
-				checksum, err := checksumFile(event.Name)
+				log.Printf("change in %v detected\n", filename)
+				err = sf.handleFileWrite(filename)
 				if err != nil {
-					log.Println("error getting checksum:", err)
-					continue
+					log.Println(err)
 				}
-				oldChecksum, exists := sf.files[event.Name]
-				if exists && oldChecksum != checksum {
-					log.Printf("change in %v detected, re-uploading\n", event.Name)
-					sf.handleRemove(event.Name)
-					sf.handleCreate(event.Name)
-				}
-				sf.files[event.Name] = checksum
 			}
 
 			// REMOVE event
 			if event.Op&fsnotify.Remove == fsnotify.Remove {
-				log.Println("sync updated detected, removing", event.Name)
-				sf.handleRemove(event.Name)
+				log.Println("file removal detected, removing", filename)
+				err = sf.handleRemove(filename)
+				if err != nil {
+					log.Println(err)
+				}
 			}
 
 			// CREATE event
 			if event.Op&fsnotify.Create == fsnotify.Create {
-				log.Println("sync updated detected, uploading", event.Name)
-				sf.handleCreate(event.Name)
+				log.Println("file creation detected, creating", filename)
+				err = sf.handleCreate(filename)
+				if err != nil {
+					log.Println(err)
+				}
 			}
 
 		case err := <-sf.watcher.Errors:
@@ -166,41 +167,72 @@ func (sf *SiaFolder) eventWatcher() {
 	}
 }
 
+// handleFileWrite handles a WRITE fsevent.
+func (sf *SiaFolder) handleFileWrite(file string) error {
+	checksum, err := checksumFile(file)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		sf.files[file] = checksum
+	}()
+
+	oldChecksum, exists := sf.files[file]
+	if !exists {
+		err = sf.handleCreate(file)
+		if err != nil {
+			return err
+		}
+	}
+	if exists && oldChecksum != checksum {
+		err = sf.handleRemove(file)
+		if err != nil {
+			return err
+		}
+		err = sf.handleCreate(file)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // Close releases any resources allocated by a SiaFolder.
 func (sf *SiaFolder) Close() error {
+	close(sf.closeChan)
 	return sf.watcher.Close()
 }
 
 // handleCreate handles a file creation event. `file` is a relative path to the
 // file on disk.
-func (sf *SiaFolder) handleCreate(file string) {
+func (sf *SiaFolder) handleCreate(file string) error {
 	abspath, err := filepath.Abs(file)
 	if err != nil {
-		log.Println("error getting absolute path to upload:", err)
-		return
+		return fmt.Errorf("error getting absolute path to upload: %v\n:", err)
 	}
 	relpath, err := filepath.Rel(sf.path, file)
 	if err != nil {
-		log.Println("error getting relative path to upload:", err)
-		return
+		return fmt.Errorf("error getting relative path to upload: %v\n", err)
 	}
 	err = sf.client.Post(fmt.Sprintf("/renter/upload/%v", relpath), fmt.Sprintf("source=%v", abspath), nil)
 	if err != nil {
-		log.Printf("error uploading %v: %v\n", file, err)
+		return fmt.Errorf("error uploading %v: %v\n", file, err)
 	}
+	return nil
 }
 
 // handleRemove handles a file removal event.
-func (sf *SiaFolder) handleRemove(file string) {
+func (sf *SiaFolder) handleRemove(file string) error {
 	relpath, err := filepath.Rel(sf.path, file)
 	if err != nil {
-		log.Println("error getting relative path to remove:", err)
-		return
+		return fmt.Errorf("error getting relative path to remove: %v\n", err)
 	}
 	err = sf.client.Post(fmt.Sprintf("/renter/delete/%v", relpath), "", nil)
 	if err != nil {
-		log.Printf("error removing %v: %v\n", file, err)
+		return fmt.Errorf("error removing %v: %v\n", file, err)
 	}
+	return nil
 }
 
 // uploadNonExisting runs once and performs any uploads required to ensure
@@ -239,7 +271,10 @@ func main() {
 	}
 	defer sf.Close()
 
+	log.Println("watching for changes to ", os.Args[1])
+
 	done := make(chan os.Signal)
 	signal.Notify(done, os.Interrupt)
 	<-done
+	fmt.Println("caught quit signal, exiting...")
 }
