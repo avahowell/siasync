@@ -38,15 +38,19 @@ func NewSiafolder(path string, apiaddr string) (*SiaFolder, error) {
 
 	// walk the provided path
 	var files []string
-	err = filepath.Walk(path, func(filepath string, f os.FileInfo, err error) error {
+	err = filepath.Walk(path, func(walkpath string, f os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		if filepath == path {
+		if walkpath == path {
 			return nil
 		}
 
-		files = append(files, filepath)
+		relpath, err := filepath.Rel(path, walkpath)
+		if err != nil {
+			return err
+		}
+		files = append(files, relpath)
 		return nil
 	})
 	if err != nil {
