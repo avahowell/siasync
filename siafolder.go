@@ -158,7 +158,9 @@ func (sf *SiaFolder) eventWatcher() {
 			}
 
 		case err := <-sf.watcher.Errors:
-			log.Println("fsevents error:", err)
+			if err != nil {
+				log.Println("fsevents error:", err)
+			}
 		}
 	}
 }
