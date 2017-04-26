@@ -71,6 +71,8 @@ func TestSiafolder(t *testing.T) {
 	}
 }
 
+// TestSiafolderCreateDelete verifies that files created or removed in the
+// watched directory are correctly uploaded and deleted.
 func TestSiafolderCreateDelete(t *testing.T) {
 	mockClient := newTestingClient()
 	sf, err := NewSiafolder(testDir, mockClient)
@@ -133,6 +135,44 @@ func TestSiafolderCreateDelete(t *testing.T) {
 
 	if _, exists := mockClient.siaFiles["testdir/newfile"]; exists {
 		t.Fatal("newfile should have been deleted when it was removed on disk")
+	}
+}
+
+// TestSiafolderCreateDirectory verifies that files in newly created
+// directories under the watched directory get correctly uploaded.
+func TestSiafolderCreateDirectory(t *testing.T) {
+	mockClient := newTestingClient()
+	sf, err := NewSiafolder(testDir, mockClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sf.Close()
+
+	testCreateDir := filepath.Join(testDir, "newdir")
+	err = os.Mkdir(testCreateDir, 0755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(testCreateDir)
+
+	// should not upload empty directories
+	time.Sleep(time.Second)
+
+	if _, exists := mockClient.siaFiles["newdir"]; exists {
+		t.Fatal("should not upload empty directories")
+	}
+
+	testFile := filepath.Join(testCreateDir, "testfile")
+	f, err := os.Create(testFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	time.Sleep(time.Second)
+
+	if _, exists := mockClient.siaFiles["newdir/testfile"]; !exists {
+		t.Fatal("should have uploaded file in newly created directory")
 	}
 }
 
