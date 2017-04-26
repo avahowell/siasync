@@ -34,15 +34,17 @@ type SiaFolder struct {
 // address.
 func NewSiafolder(path string, client apiClient) (*SiaFolder, error) {
 	sf := &SiaFolder{}
+
 	abspath, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
 	}
+
 	sf.path = abspath
 	sf.files = make(map[string]string)
 	sf.closeChan = make(chan struct{})
-
 	sf.client = client
+
 	var contracts api.RenterContracts
 	err = sf.client.Get("/renter/contracts", &contracts)
 	if err != nil {
